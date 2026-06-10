@@ -10,6 +10,7 @@ from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_controller import AccelController
+from openpilot.sunnypilot.selfdrive.controls.lib.radar_distance.radar_distance import RadarDistanceController
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -28,6 +29,7 @@ class LongitudinalPlannerSP:
     self.resolver = SpeedLimitResolver()
     self.dec = DynamicExperimentalController(CP, mpc)
     self.accel = AccelController(CP, mpc)
+    self.radar_distance = RadarDistanceController(CP)
     self.scc = SmartCruiseControl()
     self.resolver = SpeedLimitResolver()
     self.sla = SpeedLimitAssist(CP, CP_SP)
@@ -79,7 +81,11 @@ class LongitudinalPlannerSP:
     self.events_sp.clear()
     self.dec.update(sm)
     self.accel.update(sm)
+    self.radar_distance.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
+
+  def smooth_radarstate(self, radarstate):
+    return self.radar_distance.smooth_radarstate(radarstate)
 
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
     plan_sp_send = messaging.new_message('longitudinalPlanSP')

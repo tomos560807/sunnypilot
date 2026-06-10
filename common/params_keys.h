@@ -240,6 +240,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AccelPersonalityEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"AccelPersonality", {PERSISTENT | BACKUP, INT, std::to_string(static_cast<int>(cereal::LongitudinalPlanSP::AccelerationPersonality::NORMAL))}},
 
+    // Radar Distance: hold a lead through radar flicker/dropout so the MPC doesn't lose+regain it
+    {"RadarDistance", {PERSISTENT | BACKUP, BOOL, "0"}},
+
     // sunnypilot model params
     {"CameraOffset", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
     {"LagdToggle", {PERSISTENT | BACKUP, BOOL, "1"}},
