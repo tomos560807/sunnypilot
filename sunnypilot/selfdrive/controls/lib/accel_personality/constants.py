@@ -30,11 +30,15 @@ A_CRUISE_MAX_V = {
 }
 RISE_RATE = {ECO: 0.05, NORMAL: STOCK_RISE_RATE, SPORT: 0.06}   # ECO rise = stock so launch ramps promptly
 
-# Early soft braking: predicted brake need (m/s^2) -> early decel target (m/s^2).
+# Early soft braking: predicted brake need (m/s^2) -> early decel target (m/s^2). Front-loads a gentle
+# decel as soon as the 3s plan lookahead predicts a brake, so decel is spread out instead of arriving as
+# one late firm onset. The old ECO row was near-flat (-0.07 at brake_need~1.0 vs an eventual ~-0.88 plan
+# brake) so it barely front-loaded -> late, jerky onsets on route 00000456. Deepened toward (but kept
+# gentler than) NORMAL. Hard brakes (brake_need>=HARD_BRAKE_NEED or raw<=HARD_BRAKE_TARGET_ACCEL) still
+# bypass to stock, and min(.,raw) keeps it never weaker than the plan.
 SMOOTH_DECEL_BP = [0.0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4]
 SMOOTH_DECEL_V = {
-  ECO:    [0.00, -0.02, -0.05, -0.10, -0.25, -0.40, -0.60],
-  #ECO:    [0.00, -0.08, -0.20, -0.30, -0.40, -0.70, -0.80],
+  ECO:    [0.00, -0.08, -0.20, -0.35, -0.55, -0.78, -1.00],
   NORMAL: [0.00, -0.13, -0.30, -0.55, -0.84, -1.12, -1.40],
   SPORT:  [0.00, -0.17, -0.40, -0.72, -1.05, -1.35, -1.65],
 }

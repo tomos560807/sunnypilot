@@ -64,6 +64,25 @@ def test_holds_after_sustained_dropout():
   assert held.dRel == pytest.approx(30.0 - 4.0 * 0.05, abs=1e-6)
 
 
+def test_low_speed_override_lead_passthrough():
+  # radard low_speed_override emits a real closest-track lead with modelProb=0.0. It must be honored as a
+  # real lead (passthrough), NOT rejected and replaced by a stale farther held lead (would under-brake at
+  # stop-and-go and stop too close).
+  c = ctrl()
+  one = lead(status=True, dRel=2.5, vRel=0.0, vLead=0.0, modelProb=0.0)
+  out = c.smooth_radarstate(rs(one))
+  assert out.leadOne is one                         # passed straight through, not substituted
+
+
+def test_low_speed_override_lead_arms_hold():
+  # a sustained prob=0 real lead should arm the hold like any real lead
+  c = ctrl()
+  for _ in range(3):
+    c.smooth_radarstate(rs(lead(status=True, dRel=3.0, vRel=-0.5, vLead=1.0, modelProb=0.0)))
+  held = c.smooth_radarstate(rs(lead(status=False, dRel=0.0, modelProb=0.0))).leadOne
+  assert held.status is True                         # armed off the prob=0 lead, holds through dropout
+
+
 def test_obstacle_monotone_during_hold():
   c = ctrl()
   for _ in range(3):

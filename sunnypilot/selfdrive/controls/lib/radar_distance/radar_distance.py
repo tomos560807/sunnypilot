@@ -16,7 +16,6 @@ from openpilot.common.realtime import DT_MDL
 HOLD_MAX_FRAMES = 10     # ~0.5s cap, measured since the last SUSTAINED lead (not reset by 1-frame flicker)
 SUSTAIN_FRAMES = 2       # consecutive valid frames to (re)arm and reset the wall-clock
 DROPOUT_DREL = 1.0
-MIN_PROB = 0.2
 FCW_PROB_CAP = 0.9       # held lead can't reach the FCW gate (>0.9) -> no false FCW
 MIN_HELD_DREL = 0.5
 
@@ -56,7 +55,11 @@ class _LeadHold:
     self.__init__()
 
   def step(self, raw):
-    if raw.status and raw.dRel > DROPOUT_DREL and raw.modelProb > MIN_PROB:
+    # Validity mirrors the MPC, which keys off status alone (long_mpc process_lead). modelProb is NOT a
+    # gate: radard's low_speed_override emits a real closest-track lead with modelProb=0.0, so gating on
+    # prob wrongly rejected real close stop-and-go leads and substituted a stale farther held lead ->
+    # under-brake -> stopping too close. FCW stays bounded by FCW_PROB_CAP on the held output below.
+    if raw.status and raw.dRel > DROPOUT_DREL:
       self._last = (raw.dRel, raw.vRel, raw.vLead, raw.aLeadK, raw.aLeadTau, raw.modelProb)
       self._sustained += 1
       if self._sustained >= SUSTAIN_FRAMES:
