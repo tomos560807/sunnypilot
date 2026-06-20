@@ -15,13 +15,13 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_controller import AccelController as _AC  # noqa: F401
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import \
   ECO, NORMAL, SPORT, PERSONALITY_MIN, PERSONALITY_MAX, A_CRUISE_MAX_BP, RISE_RATE, \
-  STOCK_A_CRUISE_MAX_V, STOCK_RISE_RATE, HARD_BRAKE_TARGET_ACCEL, AccelerationPersonality, \
+  STOCK_A_CRUISE_MAX_V, STOCK_RISE_RATE, HARD_BRAKE_TARGET_ACCEL, HARD_BRAKE_ONSET_JERK, AccelerationPersonality, \
   BRAKE_DEEPENING_JERK, ONSET_JERK0, ONSET_GAP_SOFT, ONSET_HANDBACK_JERK
 
 # The convex onset brakes shallower than the plan during the bite, but the instantaneous-gap catch-up
 # bounds how far it can lag, and it converges to the plan. The integrated velocity deficit over an
 # armed brake stays under this conservative cap (no permanent offset; added stopping distance bounded).
-_ONSET_VDEBT_BOUND = {ECO: 0.40, SPORT: 0.35}
+_ONSET_VDEBT_BOUND = {ECO: 0.55, SPORT: 0.50}   # raised for the firm-bypass onset jerk cap (still bounded -> no runaway)
 
 T_IDXS = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0]
 _EPS = 1e-6
@@ -215,18 +215,55 @@ def test_convex_onset_no_jerk_snap(personality):
 
 
 def test_hard_brake_bypass():
+  # Firm (non-crash) hard brake: the DEEPENING RATE is jerk-limited (no raw stock grab), but depth is
+  # never reduced (out never deeper than raw) and full depth is reached within a bounded ramp.
   ctrl = make_controller(personality=ECO)
-  raw = HARD_BRAKE_TARGET_ACCEL - 0.5
-  out = ctrl.smooth_target_accel(raw, flat_traj(raw), T_IDXS, should_stop=False)
-  assert out == pytest.approx(raw, abs=_EPS)
-  assert ctrl.bypassed()
+  raw = HARD_BRAKE_TARGET_ACCEL - 0.5    # -2.0
+  last = 0.0
+  reached = False
+  for _ in range(40):
+    out = ctrl.smooth_target_accel(raw, flat_traj(raw), T_IDXS, should_stop=False)
+    assert ctrl.bypassed()
+    assert out >= raw - _EPS                                   # never deeper than the plan
+    assert out <= last - HARD_BRAKE_ONSET_JERK * DT_MDL + _EPS  # deepening rate capped
+    last = out
+    if abs(out - raw) < _EPS:
+      reached = True
+      break
+  assert reached                                               # full plan depth reached
+
+
+def test_hard_brake_onset_jerk_limited_vs_crash():
+  # The firm bypass is rate-limited; a true emergency (crash_cnt>0 / FCW) is NOT -> instant full depth.
+  firm = make_controller(personality=ECO)
+  out_firm = firm.smooth_target_accel(-3.0, flat_traj(-3.0), T_IDXS, should_stop=False)
+  assert out_firm == pytest.approx(-HARD_BRAKE_ONSET_JERK * DT_MDL, abs=_EPS)  # first tick capped from last=0
+  crash = make_controller(personality=ECO, crash_cnt=3)
+  out_crash = crash.smooth_target_accel(-3.0, flat_traj(-3.0), T_IDXS, should_stop=False)
+  assert out_crash == pytest.approx(-3.0, abs=_EPS)            # FCW: instant, never rate-limited
 
 
 def test_should_stop_bypass():
+  # should_stop firm brake: rate-limited onset, never deeper than plan, reaches full depth.
   ctrl = make_controller(personality=ECO)
-  out = ctrl.smooth_target_accel(-1.0, flat_traj(-1.0), T_IDXS, should_stop=True)
-  assert out == pytest.approx(-1.0, abs=_EPS)
-  assert ctrl.bypassed()
+  last = 0.0
+  reached = False
+  for _ in range(40):
+    out = ctrl.smooth_target_accel(-1.0, flat_traj(-1.0), T_IDXS, should_stop=True)
+    assert ctrl.bypassed()
+    assert out >= -1.0 - _EPS
+    last = out
+    if abs(out + 1.0) < _EPS:
+      reached = True
+      break
+  assert reached
+
+
+def test_disabled_hard_brake_is_instant_stock():
+  # off == stock: a disabled controller must pass the hard brake straight through (no rate cap).
+  ctrl = make_controller(enabled=False, personality=ECO)
+  out = ctrl.smooth_target_accel(-3.0, flat_traj(-3.0), T_IDXS, should_stop=False)
+  assert out == pytest.approx(-3.0, abs=_EPS)
 
 
 def test_fcw_crash_cnt_bypass():

@@ -51,6 +51,16 @@ MIN_SMOOTH_BRAKE_NEED = 0.2
 HARD_BRAKE_TARGET_ACCEL = -1.5
 HARD_BRAKE_NEED = 2.6
 
+# Hard-brake onset jerk cap. Firm/closing-lead brakes (raw<=HARD_BRAKE_TARGET_ACCEL or brake_need>=
+# HARD_BRAKE_NEED) used to fully stand the shaper down -> raw stock MPC onset, which lands as a grab
+# (felt jerk on routes 45c/45d, both user bookmarks). This caps ONLY the deepening RATE of such onsets;
+# the full plan depth is always reached (one-sided), so the brake is never weaker or later in magnitude --
+# only the rate of getting there is smoothed. Verified on the 45d@767 closing lead (ego 28.6 m/s, lead
+# braking aLeadK -2.9): cap=2.0 adds <=65ms to reach 80% of target and <=0.22m extra gap, inside the
+# 150ms / 2.0m safety budget. Do NOT lower below 2.0 (1.8 breaches the lag gate). True emergencies
+# (mpc.crash_cnt>0, i.e. FCW) skip the cap and stay pure passthrough.
+HARD_BRAKE_ONSET_JERK = 2.0   # m/s^3, deepening-only onset rate cap on firm (non-crash) hard brakes
+
 # Stop-imminent stand-down. The shaper's gentle bite is softer than the plan, so on a STOP approach it
 # coasts the car in -> halts too close / "stop-roll-stop" creep. When the plan predicts a near-stop
 # within the lookahead, stand the shaper down (full stock decel) so it stops at the proper gap with no

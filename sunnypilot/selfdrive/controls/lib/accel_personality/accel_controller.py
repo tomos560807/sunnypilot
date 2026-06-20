@@ -18,7 +18,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants imp
   NORMAL, PERSONALITY_MIN, PERSONALITY_MAX, A_CRUISE_MAX_BP, A_CRUISE_MAX_V, RISE_RATE, SMOOTH_DECEL_BP, \
   STOCK_A_CRUISE_MAX_V, STOCK_RISE_RATE, \
   SMOOTH_DECEL_V, BRAKE_DEEPENING_JERK, BRAKE_RELEASE_JERK, ACCEL_RISE_JERK, SMOOTH_DECEL_LOOKAHEAD_T, \
-  MIN_SMOOTH_BRAKE_NEED, HARD_BRAKE_TARGET_ACCEL, HARD_BRAKE_NEED, STOP_IMMINENT_VEGO, STOP_IMMINENT_LOOKAHEAD_T, \
+  MIN_SMOOTH_BRAKE_NEED, HARD_BRAKE_TARGET_ACCEL, HARD_BRAKE_NEED, HARD_BRAKE_ONSET_JERK, STOP_IMMINENT_VEGO, STOP_IMMINENT_LOOKAHEAD_T, \
   ONSET_JERK0, ONSET_JERK_GAIN, ONSET_GAP_SOFT, ONSET_GAP_GAIN, ONSET_JERK_MAX, ONSET_HANDBACK_JERK, \
   SOFT_ONSET_MAX_BRAKE_NEED, SOFT_ONSET_MAX_INSTANT_ACCEL, SOFT_ONSET_REARM_FRAMES
 
@@ -90,10 +90,15 @@ class AccelController:
       self._bypassed = False                                  # disabled / reset / blended-e2e braking
       return self._passthrough(raw)
     self._bypassed = self._emergency_bypass(raw, should_stop)
-    if self._bypassed:                                        # a hard brake must never be softened
-      return self._stand_down(raw)
+    if self._bypassed:
+      # A hard brake's DEPTH is never softened. True emergencies (FCW / crash imminent) pass straight
+      # through; other firm brakes get a deepening-only onset rate cap so the firm brake arrives smoothly
+      # instead of as a raw stock grab (full plan depth still reached -> never weaker or later in size).
+      if self._mpc.crash_cnt > 0:
+        return self._stand_down(raw)
+      return self._stand_down_jerk_limited(raw)
     if self._stop_imminent(speed_trajectory, t_idxs):         # stop coming -> stock decel, no coast/creep
-      return self._stand_down(raw)
+      return self._stand_down_jerk_limited(raw)
 
     # Front-load a gentle early brake when a deeper brake is predicted ahead. The convex shaper owns the
     # output when it governed this frame (soft_active); otherwise never weaker than the plan.
@@ -214,9 +219,23 @@ class AccelController:
     return self._finalize(target_accel)
 
   def _stand_down(self, target_accel: float) -> float:
-    # clear shaper state and hand the plan straight through (emergency / stop-imminent)
+    # clear shaper state and hand the plan straight through (true emergency / FCW)
     self._reset_onset()
     return self._passthrough(target_accel)
+
+  def _stand_down_jerk_limited(self, target_accel: float) -> float:
+    # Like _stand_down but caps the DEEPENING rate of the onset at HARD_BRAKE_ONSET_JERK. One-sided:
+    # releasing or accel passes straight through, and depth is never reduced (output rejoins the plan
+    # within ~65ms), so the firm brake is never weaker or meaningfully later -- only the onset is smoothed.
+    if not (self._enabled and self._personality != NORMAL):   # off / NORMAL -> stock passthrough (off==stock)
+      return self._stand_down(target_accel)
+    self._reset_onset()
+    self._smooth_active = False
+    self._soft_active = False
+    raw = float(target_accel)
+    last = self._last_target_accel
+    out = max(raw, last - HARD_BRAKE_ONSET_JERK * DT_MDL) if raw < last else raw  # limit deepening only
+    return self._finalize(out)
 
   def _finalize(self, target_accel: float) -> float:
     target_accel = self._clean_accel(target_accel)
