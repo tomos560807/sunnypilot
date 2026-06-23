@@ -25,7 +25,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants imp
   STOCK_A_CRUISE_MAX_V, STOCK_RISE_RATE, SMOOTH_DECEL_BP, SMOOTH_DECEL_V, BRAKE_DEEPENING_JERK, \
   BRAKE_RELEASE_JERK, ACCEL_RISE_JERK, SMOOTH_DECEL_LOOKAHEAD_T, MIN_SMOOTH_BRAKE_NEED, \
   HARD_BRAKE_TARGET_ACCEL, HARD_BRAKE_NEED, OVERBITE_CAP, STOP_PASSTHROUGH_V, \
-  STOP_IMMINENT_VEGO, STOP_IMMINENT_LOOKAHEAD_T
+  STOP_IMMINENT_VEGO, STOP_IMMINENT_LOOKAHEAD_T, \
+  STOP_ENFORCE_V, STOP_ENFORCE_DIST, STOP_ENFORCE_RANGE, STOP_ENFORCE_LEAD_V, STOP_ENFORCE_MAX_DECEL, STOP_ENFORCE_MIN_GAP
 
 _ZERO_ACCEL_EPS = 1e-6
 
@@ -44,6 +45,9 @@ class AccelController:
     self._decel_target = 0.0
     self._smooth_active = False
     self._bypassed = False
+    self._lead_status = False
+    self._lead_d = 0.0
+    self._lead_vlead = 0.0
     self._read_params()
 
   def _read_params(self) -> None:
@@ -57,6 +61,10 @@ class AccelController:
     if self._frame % int(1. / DT_MDL) == 0:
       self._read_params()
     self._v_ego = sm['carState'].vEgo
+    lead = sm['radarState'].leadOne          # raw radard lead (== what the MPC sees at crawl, where the enforcer acts)
+    self._lead_status = bool(lead.status)
+    self._lead_d = float(lead.dRel)
+    self._lead_vlead = float(lead.vLead)
     self._frame += 1
 
   def get_max_accel(self, v_ego: float) -> float:
@@ -80,30 +88,41 @@ class AccelController:
     self._smooth_active = False
     self._bypassed = False
 
+    out = self._shape(raw, should_stop, reset, speed_trajectory, t_idxs)
+    out = self._stop_enforce(out)   # never-weaker low-speed floor: no creep inside the target stop gap
+    return self._finalize(out)
+
+  def _shape(self, raw: float, should_stop: bool, reset: bool, speed_trajectory, t_idxs) -> float:
     # --- Full stock passthroughs (output is exactly the plan, no shaping) ---
     if reset or not self._enabled:
-      return self._passthrough(raw)                            # disabled / reset
+      return raw                                               # disabled / reset
     if self._v_ego < STOP_PASSTHROUGH_V and raw <= 0.0:
-      # Stop/creep regime: braking is stock so the stop distance matches OFF exactly (no coast-in).
-      return self._passthrough(raw)
+      return raw                                               # stop/creep regime: braking is stock (no coast-in)
     self._bypassed = self._emergency_bypass(raw, should_stop)
     if self._bypassed or self._stop_imminent(speed_trajectory, t_idxs):
-      # Hard brake (closing lead / FCW / deep plan) or a coming stop: hand the plan straight through at
-      # FULL strength and rate -- never delay or rate-limit it (a delayed hard brake is a near-crash).
-      return self._passthrough(raw)
+      return raw                                               # hard brake / coming stop: full strength, no delay
 
-    # --- Anticipatory front-load. NEVER weaker than the plan: min(., raw) guarantees the output is only
-    #     ever EQUAL or DEEPER than the plan, so the controller can never under-brake. ---
+    # Anticipatory front-load, capped at OVERBITE_CAP below the live plan (avoids an abrupt over-bite on a
+    # cut-in brake_need spike). min(., raw) keeps the output never weaker than the plan -> never under-brakes.
     target = raw
     if self._brake_need >= MIN_SMOOTH_BRAKE_NEED:
       self._smooth_active = True
-      # Front-load a gentle early brake when a deeper brake is predicted ahead, but never bite more than
-      # OVERBITE_CAP below the LIVE plan (a cut-in/merge spikes brake_need while the plan still wants
-      # throttle -> abrupt over-bite). Once the plan itself brakes, the table wins -> anticipation preserved.
       self._decel_target = max(self.get_decel_target(self._brake_need), raw - OVERBITE_CAP)
       target = min(raw, self._decel_target)
     slewed = self._slew(target)
-    return self._finalize(min(slewed, raw) if raw < 0.0 else slewed)
+    return min(slewed, raw) if raw < 0.0 else slewed
+
+  def _stop_enforce(self, out: float) -> float:
+    # Never-weaker low-speed floor: bring the car to rest at STOP_ENFORCE_DIST behind a near-stopped lead,
+    # so the stock MPC's crawl-creep cannot park us inside the target gap. Disabled => no-op (off==stock).
+    if not (self._enabled and self._lead_status and 0.1 < self._v_ego < STOP_ENFORCE_V
+            and self._lead_vlead < STOP_ENFORCE_LEAD_V
+            and 0.1 < self._lead_d < STOP_ENFORCE_DIST + STOP_ENFORCE_RANGE):   # only the final-approach creep zone
+      return out
+    gap = self._lead_d - STOP_ENFORCE_DIST                    # distance left before reaching the target gap
+    floor = -(self._v_ego ** 2) / (2.0 * max(gap, STOP_ENFORCE_MIN_GAP))   # gentle decel to stop at the target
+    floor = max(floor, STOP_ENFORCE_MAX_DECEL)                # cap -> gentle hold, never a grab
+    return min(out, floor)                                    # never weaker than the plan
 
   def _stop_imminent(self, speed_trajectory: Sequence[float] | None, t_idxs: Sequence[float]) -> bool:
     # plan predicts a near-stop within the lookahead -> a stop is coming (lead or light/sign).
@@ -143,10 +162,6 @@ class AccelController:
       return self._clean_accel(min(target_accel, ACCEL_RISE_JERK[self._personality] * DT_MDL))
     step = ACCEL_RISE_JERK[self._personality] * DT_MDL
     return self._clean_accel(min(target_accel, self._last_target_accel + step))
-
-  def _passthrough(self, target_accel: float) -> float:
-    self._smooth_active = False
-    return self._finalize(target_accel)
 
   def _finalize(self, target_accel: float) -> float:
     target_accel = self._clean_accel(target_accel)

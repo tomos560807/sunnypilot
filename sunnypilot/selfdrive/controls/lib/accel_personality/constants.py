@@ -15,11 +15,8 @@ SPORT = AccelerationPersonality.sport
 PERSONALITY_MIN = min(AccelerationPersonality.schema.enumerants.values())
 PERSONALITY_MAX = max(AccelerationPersonality.schema.enumerants.values())
 
-# Accel ceiling + its upward slew rate (the POSITIVE-accel / launch + cruise-accel side; independent of
-# braking, so tuning here does NOT touch the gentle-brake goals). off==stock is enforced in accel_controller
-# (get_max_accel/get_rise_rate fall back to STOCK_* when disabled), so the NORMAL profile is free to differ
-# from stock -- all three tiers are now distinct. Start-from-stop is FAST: launch peak (v=0) is firm and the
-# rise rate (how fast the ceiling opens) is well above stock 0.05 in every tier, stepped ECO < NORMAL < SPORT.
+# Positive-accel ceiling + its upward slew rate (launch/cruise side; independent of braking). off==stock is
+# enforced in accel_controller (falls back to STOCK_* when disabled), so the tiers are free to differ.
 A_CRUISE_MAX_BP = [0., 14., 25., 40.]
 STOCK_A_CRUISE_MAX_V = [1.6, 0.7, 0.2, 0.08]
 STOCK_RISE_RATE = 0.05
@@ -30,11 +27,9 @@ A_CRUISE_MAX_V = {
 }
 RISE_RATE = {ECO: 0.10, NORMAL: 0.15, SPORT: 0.22}   # ceiling open-rate: all >> stock 0.05 for fast take-off
 
-# Anticipatory front-load: predicted brake need (m/s^2) -> early decel target (m/s^2). When the 3s plan
-# lookahead predicts a brake, start a gentle decel EARLY so braking is spread out instead of arriving as
-# one late firm onset (route 00000456). It is one-sided: min(., raw) keeps the output NEVER weaker than the
-# plan, so it can only brake EQUAL or EARLIER/DEEPER, never softer. Hard brakes (brake_need>=HARD_BRAKE_NEED
-# or raw<=HARD_BRAKE_TARGET_ACCEL) pass straight through at full strength.
+# Anticipatory front-load: predicted brake need (m/s^2) -> early decel target (m/s^2). Starts a gentle
+# decel early when a brake is predicted, so it arrives spread out, not as one late firm onset. One-sided
+# (never weaker than the plan).
 SMOOTH_DECEL_BP = [0.0, 0.4, 0.8, 1.2, 1.6, 2.0, 2.4]
 SMOOTH_DECEL_V = {
   ECO:    [0.00, -0.08, -0.20, -0.35, -0.55, -0.78, -1.00],
@@ -48,11 +43,8 @@ ACCEL_RISE_JERK = {ECO: 1.0, NORMAL: 1.5, SPORT: 2.2}   # accel-onset jerk: high
 SMOOTH_DECEL_LOOKAHEAD_T = 3.0
 MIN_SMOOTH_BRAKE_NEED = 0.2
 
-# Front-load over-bite cap. The SMOOTH_DECEL front-load is allowed to brake at most this much DEEPER than
-# the live raw plan. On a cut-in/merge the 3s brake_need spikes and the table would front-load a firm brake
-# while the plan still wants throttle/coast -> an abrupt early bite (the "worse on merge" feel; routes
-# 45e/460). This binds only in that contradictory case; once the plan itself brakes, raw-OVERBITE_CAP sits
-# below the table value so the table wins and the anticipatory early brake (route 456 fix) is preserved.
+# Cap how much DEEPER than the live plan the front-load may bite -> no abrupt over-bite on a cut-in
+# brake_need spike (binds only when the plan still wants throttle; once it brakes, the table wins).
 OVERBITE_CAP = 0.30   # m/s^2 max front-load depth below the live plan
 
 # Hard brake: at/below this accel, or this predicted brake_need within the lookahead, the controller hands
@@ -67,8 +59,15 @@ HARD_BRAKE_NEED = 2.6
 STOP_IMMINENT_VEGO = 1.0          # m/s  plan-predicted speed below this within the lookahead == stop coming
 STOP_IMMINENT_LOOKAHEAD_T = 3.0   # s
 
-# Stop/creep stop-neutrality. Below this ego speed, the brake side hands the plan straight through (stock),
-# so the controller cannot soften the final crawl and let the car coast in closer than stock. Matches the
-# radar_distance low-speed stop-neutrality so ON == OFF near stops. Positive-accel (launch) shaping is
-# unaffected (the launch profiles still apply via the accel ceiling).
-STOP_PASSTHROUGH_V = 5.0          # m/s ego speed below which braking is stock passthrough
+# Below this ego speed the brake side is stock passthrough, so stop distance is byte-identical to off.
+STOP_PASSTHROUGH_V = 5.0          # m/s
+
+# Low-speed stop-distance enforcer. The stock MPC loses gap-cost leverage at crawl and creeps inside
+# STOP_DISTANCE behind a stopped lead. This is a never-weaker floor: command the gentle decel that brings
+# the car to rest at STOP_ENFORCE_DIST and take min(plan, floor) -> only ever adds braking, self-targeting.
+STOP_ENFORCE_V = 5.0              # m/s: only enforce at/below this ego speed
+STOP_ENFORCE_DIST = 5.5          # m: target standstill gap (under STOP_DISTANCE=6 for the radar rear-of-lead offset)
+STOP_ENFORCE_RANGE = 3.0         # m: only within DIST+RANGE of the lead (final-approach creep zone)
+STOP_ENFORCE_LEAD_V = 1.5        # m/s: only behind a near-stopped lead
+STOP_ENFORCE_MAX_DECEL = -1.8    # m/s^2: cap -> always a gentle hold, never a grab
+STOP_ENFORCE_MIN_GAP = 0.5       # m: kinematic denominator floor

@@ -34,8 +34,9 @@ class FakeParams:
     self.store[key] = val
 
 
-def make_sm(v_ego=20.0):
-  return {'carState': SimpleNamespace(vEgo=v_ego)}
+def make_sm(v_ego=20.0, lead_status=False, lead_d=0.0, lead_vlead=0.0):
+  lead = SimpleNamespace(status=lead_status, dRel=lead_d, vLead=lead_vlead)
+  return {'carState': SimpleNamespace(vEgo=v_ego), 'radarState': SimpleNamespace(leadOne=lead)}
 
 
 def make_controller(enabled=True, personality=NORMAL, crash_cnt=0):
@@ -223,6 +224,42 @@ def test_stop_imminent_passthrough_but_moving_follow_shapes():
   moving = [8.0] * len(T_IDXS)
   ctrl.smooth_target_accel(-0.1, flat_traj(-1.0), T_IDXS, should_stop=False, speed_trajectory=moving)
   assert ctrl.smooth_active()
+
+
+def test_stop_enforce_brakes_when_mpc_creeps_inside_target():
+  # Crawl behind a stopped lead inside the target gap: the stock plan eases off (~ -0.1), but the enforcer
+  # holds a gentle decel to stop at the target -> output is DEEPER than the easing plan (no creep-in).
+  ctrl = make_controller(personality=ECO)
+  ctrl.update(make_sm(v_ego=1.5, lead_status=True, lead_d=4.0, lead_vlead=0.0))   # inside 5.5m target, moving
+  out = ctrl.smooth_target_accel(-0.1, flat_traj(-0.1), T_IDXS, should_stop=False)
+  assert out < -0.1 - _EPS                              # enforcer added braking vs the easing plan
+  assert out >= -2.0 - _EPS                             # but gentle (capped), never a grab
+
+
+def test_stop_enforce_off_when_disabled():
+  # Disabled controller: enforcer is a no-op (off == stock).
+  ctrl = make_controller(enabled=False, personality=ECO)
+  ctrl.update(make_sm(v_ego=1.5, lead_status=True, lead_d=4.0, lead_vlead=0.0))
+  out = ctrl.smooth_target_accel(-0.1, flat_traj(-0.1), T_IDXS, should_stop=False)
+  assert out == pytest.approx(-0.1, abs=_EPS)
+
+
+def test_stop_enforce_no_op_past_target_and_moving_lead():
+  # Past the target gap (lead far): no enforcement. Moving lead: no enforcement (only near-stopped leads).
+  ctrl = make_controller(personality=ECO)
+  ctrl.update(make_sm(v_ego=1.5, lead_status=True, lead_d=12.0, lead_vlead=0.0))   # far -> no floor
+  assert ctrl.smooth_target_accel(-0.1, flat_traj(-0.1), T_IDXS, should_stop=False) == pytest.approx(-0.1, abs=_EPS)
+  ctrl.update(make_sm(v_ego=1.5, lead_status=True, lead_d=4.0, lead_vlead=4.0))    # moving lead -> no floor
+  assert ctrl.smooth_target_accel(-0.1, flat_traj(-0.1), T_IDXS, should_stop=False) == pytest.approx(-0.1, abs=_EPS)
+
+
+def test_stop_enforce_never_weaker():
+  # The enforcer only ever ADDS braking: output is never weaker than the plan.
+  ctrl = make_controller(personality=ECO)
+  ctrl.update(make_sm(v_ego=2.0, lead_status=True, lead_d=4.5, lead_vlead=0.0))
+  for raw in (-0.05, -0.3, -1.0, -2.5):
+    out = ctrl.smooth_target_accel(raw, flat_traj(raw), T_IDXS, should_stop=False)
+    assert out <= raw + _EPS
 
 
 def test_disabled_hard_brake_is_instant_stock():
