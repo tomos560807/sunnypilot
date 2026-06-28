@@ -123,6 +123,11 @@ class CarState(CarStateBase):
       self.lkas_hud_msg = copy.copy(cp_adas.vl["PROPILOT_HUD"])
       self.lkas_hud_info_msg = copy.copy(cp_adas.vl["PROPILOT_HUD_INFO_MSG"])
 
+    # JDM Nissan Leaf patch for seatbelt and LKAS settings
+    if self.CP.carFingerprint in (CAR.NISSAN_LEAF, CAR.NISSAN_LEAF_IC):
+      ret.seatbeltUnlatched = False
+      ret.invalidLkasSetting = False
+
     return ret
 
   @staticmethod
