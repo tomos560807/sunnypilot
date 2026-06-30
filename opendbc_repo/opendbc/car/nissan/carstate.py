@@ -135,6 +135,11 @@ class CarState(CarStateBase, CarStateExt):
 
     CarStateExt.update(self, ret, ret_sp, can_parsers)
 
+    # JDM Nissan Leaf patch for seatbelt and LKAS settings
+    if self.CP.carFingerprint in (CAR.NISSAN_LEAF, CAR.NISSAN_LEAF_IC):
+      ret.seatbeltUnlatched = False
+      ret.invalidLkasSetting = False
+
     ret.buttonEvents = [
       *create_button_events(self.distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise}),
       *self.button_events,
